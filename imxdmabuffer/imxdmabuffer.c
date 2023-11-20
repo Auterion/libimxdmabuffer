@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <string.h>
 #include <imxdmabuffer_config.h>
 #include "imxdmabuffer.h"
@@ -81,6 +82,9 @@ ImxDmaBuffer* imx_dma_buffer_allocate(ImxDmaBufferAllocator *allocator, size_t s
 
 void imx_dma_buffer_deallocate(ImxDmaBuffer *buffer)
 {
+	if (!buffer) {
+		return;
+	}
 	assert(buffer != NULL);
 	assert(buffer->allocator != NULL);
 	assert(buffer->allocator->deallocate != NULL);
@@ -93,6 +97,7 @@ uint8_t* imx_dma_buffer_map(ImxDmaBuffer *buffer, unsigned int flags, int *error
 	assert(buffer != NULL);
 	assert(buffer->allocator != NULL);
 	assert(buffer->allocator->map != NULL);
+	if (error) *error = 0;
 	return buffer->allocator->map(buffer->allocator, buffer, flags, error);
 }
 
@@ -170,7 +175,16 @@ static ImxDmaBuffer* wrapped_dma_buffer_allocator_allocate(ImxDmaBufferAllocator
 static void wrapped_dma_buffer_allocator_deallocate(ImxDmaBufferAllocator *allocator, ImxDmaBuffer *buffer)
 {
 	IMX_DMA_BUFFER_UNUSED_PARAM(allocator);
-	IMX_DMA_BUFFER_UNUSED_PARAM(buffer);
+	ImxWrappedDmaBuffer *wrapped_buf = (ImxWrappedDmaBuffer *)(buffer);
+	if (wrapped_buf->deallocate != NULL) {
+		if (wrapped_buf->virtual_address != NULL) {
+			/* Ignore ref_count and unmap the buffer. */
+			wrapped_buf->unmap(wrapped_buf);
+			wrapped_buf->virtual_address = NULL;
+			wrapped_buf->ref_count = 0;
+		}
+		wrapped_buf->deallocate(wrapped_buf);
+	}
 }
 
 
@@ -178,7 +192,32 @@ static uint8_t* wrapped_dma_buffer_allocator_map(ImxDmaBufferAllocator *allocato
 {
 	IMX_DMA_BUFFER_UNUSED_PARAM(allocator);
 	ImxWrappedDmaBuffer *wrapped_buf = (ImxWrappedDmaBuffer *)(buffer);
-	return (wrapped_buf->map != NULL) ? wrapped_buf->map(wrapped_buf, flags, error) : NULL;
+
+	if (error != NULL) *error = 0;
+
+        if (wrapped_buf->map == NULL) {
+		if (error != NULL) *error = EFAULT;
+		return NULL;
+	}
+
+	if (wrapped_buf->ref_count > 0) {
+		wrapped_buf->ref_count += 1;
+		assert(wrapped_buf->virtual_address != NULL);
+		return wrapped_buf->virtual_address;
+	}
+
+	assert(wrapped_buf->virtual_address == NULL);
+
+	/* Buffer is not mapped yet. Call mmap() to perform
+	 * the memory mapping. */
+
+	wrapped_buf->virtual_address = wrapped_buf->map(wrapped_buf, flags, error);
+
+	if (wrapped_buf->virtual_address != NULL) {
+		wrapped_buf->ref_count = 1;
+	}
+
+	return wrapped_buf->virtual_address;
 }
 
 
@@ -186,8 +225,18 @@ static void wrapped_dma_buffer_allocator_unmap(ImxDmaBufferAllocator *allocator,
 {
 	IMX_DMA_BUFFER_UNUSED_PARAM(allocator);
 	ImxWrappedDmaBuffer *wrapped_buf = (ImxWrappedDmaBuffer *)(buffer);
-	if (wrapped_buf->unmap != NULL)
+
+	if (wrapped_buf->unmap != NULL) {
+		assert(wrapped_buf->ref_count > 0);
+
+		wrapped_buf->ref_count -= 1;
+
+		if (wrapped_buf->ref_count > 0) {
+			return;
+		}
+
 		wrapped_buf->unmap(wrapped_buf);
+	}
 }
 
 

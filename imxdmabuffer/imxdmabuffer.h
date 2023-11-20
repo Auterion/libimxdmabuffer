@@ -269,10 +269,14 @@ struct _ImxWrappedDmaBuffer
 
 	uint8_t* (*map)(ImxWrappedDmaBuffer *wrapped_dma_buffer, unsigned int flags, int *error);
 	void (*unmap)(ImxWrappedDmaBuffer *wrapped_dma_buffer);
+	void (*deallocate)(ImxWrappedDmaBuffer *wrapped_dma_buffer);
 
 	int fd;
 	imx_physical_address_t physical_address;
 	size_t size;
+	unsigned ref_count;
+	void* virtual_address;
+	void* user_data;
 };
 
 /* Call for initializing wrapped DMA buffer structures.
